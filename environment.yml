@@ -1,0 +1,7 @@
+name: ameynert-bam2fastq-dev
+channels:
+ - conda-forge
+ - bioconda
+ - defaults
+dependencies:
+ - python=3.7
