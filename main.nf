@@ -82,9 +82,9 @@ if (!params.config) {
  * Create a channel for input BAM files
  */
 Channel
-  .fromFilePairs( params.input, size: 1 )
+  .fromFilePairs( params.input, size: 2 ) { file -> file.name.replaceAll(/.bam|.bai$/,'') }
   .ifEmpty { exit 1, "Cannot find any files matching ${params.input}\nNB: Path needs to be enclosed in quotes!\nNB: Path requires at least one * wildcard!" }
-  .into { fetch_ch }
+  .set { samples_ch }
 
 
 /* TODO - filter BAM files to proband only for fetch/count/score/blast/annotate steps, put parental BAM files matched with proband sample name through to de novo step  */
@@ -95,19 +95,17 @@ Channel
 process fetch {
 
   input:
-  set val(name), file(alignment) from fetch_ch
+  set val(name), file(alignment) from samples_ch
 
   output:
-  set val(name), file('*.reads'), file('*.bam') into aggregate_ch
+  set val(name), file('*.reads'), file(alignment) into reads_ch
 
   script:
   """
-  source ${params.indelible}/venv/bin/activate
-  indelible.py fetch \
-    --i ${alignment} \
+  ${params.indelible}/indelible.py fetch \
+    --i ${name}.bam \
     --o ${name}.reads \
     --config ${params.config}
-  deactivate
   """
 }
 
@@ -117,21 +115,19 @@ process fetch {
 process aggregate {
 
   input:
-  set val(name), file(reads), file(alignment) from aggregate_ch
+  set val(name), file(reads), file(alignment) from reads_ch
 
   output:
-  set val(name), file('*.counts') into score_ch
+  set val(name), file('*.counts') into counts_ch
 
   script:
   """
-  source ${params.indelible}/venv/bin/activate
-  indelible.py aggregate \
+  ${params.indelible}/indelible.py aggregate \
     --i ${reads} \
-    --b ${alignment} \
+    --b ${name}.bam \
     --o ${name}.counts \
     --r ${params.reference} \
     --config ${params.config}
-  deactivate
   """
 }
 
@@ -141,19 +137,17 @@ process aggregate {
 process score {
 
   input:
-  set val(name), file(counts) from score_ch
+  set val(name), file(counts) from counts_ch
 
   output:
-  set val(name), file('*.scored') into blast_ch
+  set val(name), file('*.scored') into score_ch
 
   script:
   """
-  source ${params.indelible}/venv/bin/activate
-  indelible.py score \
+  ${params.indelible}/indelible.py score \
     --i ${counts} \
     --o ${name}.scored \
     --config ${params.config}
-  deactivate
   """
 }
 
@@ -166,17 +160,15 @@ process blast {
   publishDir params.outdir, mode: 'copy'
 
   input:
-  set val(name), file(scored) from blast_ch
+  set val(name), file(scored) from score_ch
 
-  output:
-  file(*) into annotate_ch
+  /*output:
+  set file(*) into blast_ch*/
 
   script:
   """
-  source ${params.indelible}/venv/bin/activate
-  indelible.py blast \
+  ${params.indelible}/indelible.py blast \
     --i ${scored} \
     --config ${params.config}
-  deactivate
   """
 }
