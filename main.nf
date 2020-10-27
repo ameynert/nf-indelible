@@ -86,6 +86,16 @@ if (!params.frequency) {
 }
 
 /*
+ * Create value channels for input files
+ */
+config_ch = Channel.value(file(params.config))
+reference_ch = Channel.value(file(params.reference))
+ped_ch = Channel.value(file(params.ped))
+parents_ch = Channel.value(file(params.parents))
+frequency_ch = Channel.value(file(params.frequency))
+indelible_ch = Channel.value(file(params.indelible))
+
+/*
  * Create a channel for proband BAM files
  */
 Channel
@@ -100,16 +110,19 @@ process fetch {
 
   input:
   set val(name), file(alignment) from probands_ch
+  file indelible from indelible_ch
+  file config from config_ch
 
   output:
   set val(name), file('*.reads'), file(alignment) into reads_ch
 
   script:
+  name = name.replaceAll(/${params.suffix}/, '')
   """
-  ${params.indelible}/indelible.py fetch \
-    --i ${name}.bam \
+  ${indelible}/indelible.py fetch \
+    --i ${name}${params.suffix}.bam \
     --o ${name}.reads \
-    --config ${params.config}
+    --config ${config}
   """
 }
 
@@ -120,18 +133,21 @@ process aggregate {
 
   input:
   set val(name), file(reads), file(alignment) from reads_ch
+  file indelible from indelible_ch
+  file config from config_ch
+  file reference from reference_ch
 
   output:
   set val(name), file('*.counts') into counts_ch
 
   script:
   """
-  ${params.indelible}/indelible.py aggregate \
+  ${indelible}/indelible.py aggregate \
     --i ${reads} \
-    --b ${name}.bam \
+    --b ${name}${params.suffix}.bam \
     --o ${name}.counts \
-    --r ${params.reference} \
-    --config ${params.config}
+    --r ${reference} \
+    --config ${config}
   """
 }
 
@@ -142,16 +158,18 @@ process score {
 
   input:
   set val(name), file(counts) from counts_ch
+  file indelible from indelible_ch
+  file config from config_ch
 
   output:
   set val(name), file('*.scored') into score_ch
 
   script:
   """
-  ${params.indelible}/indelible.py score \
+  ${indelible}/indelible.py score \
     --i ${counts} \
     --o ${name}.scored \
-    --config ${params.config}
+    --config ${config}
   """
 }
 
@@ -163,15 +181,17 @@ process blast {
 
   input:
   set val(name), file(scored) from score_ch
+  file indelible from indelible_ch
+  file config from config_ch
 
   output:
   set val(name), file(scored), file('*.fasta*') into blast_ch
 
   script:
   """
-  ${params.indelible}/indelible.py blast \
+  ${indelible}/indelible.py blast \
     --i ${scored} \
-    --config ${params.config}
+    --config ${config}
   """
 }
 
@@ -185,21 +205,52 @@ process annotate {
 
   input:
   set val(name), file(scored), file(blast) from blast_ch
+  file indelible from indelible_ch
+  file config from config_ch
+  file frequency from frequency_ch
 
   output:
   set val(name), file('*.annotated') into annotated_ch
 
   script:
   """
-  ${params.indelible}/indelible.py annotate \
+  ${indelible}/indelible.py annotate \
     --i ${scored} \
     --o ${name}.annotated \
-    --d ${params.frequency } \
-    --config ${params.config}
+    --d ${frequency} \
+    --config ${config}
   """
 }
 
 /*
  * STEP 6 - Read in the PED file and map proband name to 
- *          maternal and paternal BAM files
+ *          maternal and paternal BAM files, then run
+ *          denovo mutation event detection
  */
+process denovo {
+
+  publishDir  params.outdir, mode: 'copy'
+
+  input:
+  set val(name), file(annotated) from annotated_ch
+  file indelible from indelible_ch
+  file config from config_ch
+  file ped from ped_ch
+  file parents from parents_ch
+ 
+  output:
+  set val(name), file('*.denovo') into denovo_ch
+
+  script:
+  """
+  paternal_id=`grep ${name} ${ped} | cut -f 3`
+  maternal_id=`grep ${name} ${ped} | cut -f 4`
+
+  ${indelible}/indelible.py denovo \
+    --c ${annotated} \
+    --m ${parents}/\${maternal_id}${params.suffix}.bam \
+    --p ${parents}/\${paternal_id}${params.suffix}.bam \
+    --o ${name}.denovo \
+    --config ${config}
+  """
+}
