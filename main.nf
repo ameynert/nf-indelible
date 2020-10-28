@@ -13,16 +13,17 @@ def helpMessage() {
 
     The typical command for running the pipeline is as follows:
 
-    nextflow run ameynert/nf-indelible --probands '/path/to/bams/*.{bam,bai}' --parents /path/to/parent/bams/dir
+    nextflow run ameynert/nf-indelible --input '/path/to/bams/*.{bam,bai}' --parents /path/to/parent/bams/dir
                                        --ped samples.ped --outdir /path/to/outdir
                                        --reference hg38.fa --indelible /path/to/indelible
                                        --config /path/to/indelible/config.yml
                                        --frequency /path/to/indelible/frequency/database
+                                       --denovo
 
     Mandatory arguments:
-      --probands             The input directory containing proband BAM files
-      --parents              The input directory containing parent BAM files
-      --ped                  Pedigree file relating samples in trios
+      --input                The input directory containing proband BAM files
+      --parents              The input directory containing parent BAM files (required if --denovo set)
+      --ped                  Pedigree file relating samples in trios (required if --denovo set)
       --outdir               The output directory where the results will be saved
       --reference            Reference genome FASTA file
       --indelible            Indelible virtualenv
@@ -32,6 +33,7 @@ def helpMessage() {
     Other options:
       -name                  Name for the pipeline run. If not specified, Nextflow will automatically generate a random mnemonic
       --suffix               Optional suffix (e.g. "-ready") for sample names
+      --denovo               Run de novo detection step
 
     """.stripIndent()
 }
@@ -53,11 +55,11 @@ if (!(workflow.runName ==~ /[a-z]+_[a-z]+/)) {
     custom_runName = workflow.runName
 }
 
-if (!params.probands) {
+if (!params.input) {
     exit 1, "Input proband BAM files not specified"
 }
 
-if (!params.parents) {
+if (params.denovo && !params.parents) {
     exit 1, "Input parent BAM file directory not specified"
 }
 
@@ -65,7 +67,7 @@ if (!params.outdir) {
     exit 1, "Output directory not specified"
 }
 
-if (!params.ped) {
+if (params.denovo && !params.ped) {
     exit 1, "Pedigree file not specified"
 }
 
@@ -90,17 +92,20 @@ if (!params.frequency) {
  */
 config_ch = Channel.value(file(params.config))
 reference_ch = Channel.value(file(params.reference))
-ped_ch = Channel.value(file(params.ped))
-parents_ch = Channel.value(file(params.parents))
 frequency_ch = Channel.value(file(params.frequency))
 indelible_ch = Channel.value(file(params.indelible))
+
+if (params.denovo) {
+  ped_ch = Channel.value(file(params.ped))
+  parents_ch = Channel.value(file(params.parents))
+}
 
 /*
  * Create a channel for proband BAM files
  */
 Channel
-  .fromFilePairs( params.probands, size: 2 ) { file->file.name.replaceAll(/.bam|.bai$/,'') }
-  .ifEmpty { exit 1, "Cannot find any files matching ${params.probands}\nNB: Path needs to be enclosed in quotes!\nNB: Path requires at least one * wildcard!" }
+  .fromFilePairs( params.input, size: 2 ) { file->file.name.replaceAll(/.bam|.bai$/,'') }
+  .ifEmpty { exit 1, "Cannot find any files matching ${params.input}\nNB: Path needs to be enclosed in quotes!\nNB: Path requires at least one * wildcard!" }
   .set { probands_ch }
 
 /*
@@ -210,7 +215,7 @@ process annotate {
   file frequency from frequency_ch
 
   output:
-  set val(name), file('*.annotated') into annotated_ch
+  set val(name), file('*.annotated') into annotated_ch,annotated_ch2
 
   script:
   """
@@ -221,6 +226,28 @@ process annotate {
     --config ${config}
   """
 }
+
+/* 
+ * STEP	7 - Apply filters to annotated output:
+ *     	    https://github.com/eugenegardner/indelible#recommended-filtering
+ */
+process	annotated_filter {
+ 
+  publishDir  params.outdir, mode: 'copy'
+
+  input:
+  set val(name), file(annotated) from annotated_ch2
+
+  output:
+  set val(name), file('*.filtered') into annotated_filtered_ch  
+
+  script:
+  """ 
+  filter_annotated.R ${annotated} ${name}.annotated.filtered
+  """ 
+}
+
+if (params.denovo) {
 
 /*
  * STEP 6 - Read in the PED file and map proband name to 
@@ -253,4 +280,26 @@ process denovo {
     --o ${name}.denovo \
     --config ${config}
   """
+}
+
+/*
+ * STEP 8 - Apply filters to de novo output:
+ *          https://github.com/eugenegardner/indelible#recommended-filtering
+ */
+process denovo_filter {
+
+  publishDir  params.outdir, mode: 'copy'
+
+  input:
+  set val(name), file(denovo) from denovo_ch
+
+  output:
+  set val(name), file('*.filtered') into denovo_filtered_ch
+
+  script:
+  """
+  filter_denovo.R ${denovo} ${name}.denovo.filtered
+  """
+}
+
 }
